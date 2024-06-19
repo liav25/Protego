@@ -1,12 +1,17 @@
+import re
 import logging
+from typing import Dict, Optional
 
 from langchain.chains.conversation.base import ConversationChain
 from langchain.memory import ConversationBufferMemory
 from langchain_openai import OpenAI
 from langchain_core.messages.human import HumanMessage
+from langchain_core.messages.system import SystemMessage
 from langchain_core.language_models.llms import BaseLLM
 
-from typing import Dict
+
+from prompts import few_shot_cot_system, guidlines_prompt as prompt
+from output_parser import ChatOutputParser
 
 Content = Sender = str
 
@@ -19,6 +24,7 @@ class GroomingDetector:
         known_side: str = "user",
         unknown_side: str = "unknown",
         explain: bool = False,
+        examples: Optional[list[dict[str, str]]] = None,
     ):
         """
         Initializes the GroomingDetector with the known side and optionally a starting message.
@@ -29,17 +35,25 @@ class GroomingDetector:
         self.known_side = known_side
         self.unknown_side = unknown_side
         self.explain = explain
-
+        self.llm = llm
         self.conversation = ConversationChain(llm=llm, memory=memory)
+        self.examples = examples
+        self.add_message(sender="system", content=self.generate_system_prompt())
+        self.output_parser = ChatOutputParser()
 
-    def add_message(self, sender: Sender, content: Content):
+    def add_message(self, sender: Sender, content: Content) -> None:
         """
         Adds a message to the conversation.
 
         :param message: The message to add.
         :param sender: The sender of the message ('known' or 'unknown').
         """
-        self.conversation.memory.buffer.append(HumanMessage(content=content, id=sender))
+        if sender == "system":
+            message = SystemMessage(id=sender, content=content)
+        else:
+            message = HumanMessage(content=content, id=sender)
+
+        self.conversation.memory.buffer.append(message)
         logging.info(f"message detected: {sender}: {content}")
 
     def add_bulk_messages(self, messages: Dict[Sender, Content]):
@@ -56,41 +70,62 @@ class GroomingDetector:
         )
 
     @property
-    def prompt(self):
-        return f""""You are an AI language model designed to detect signs of cyberbullying and online grooming in conversations. 
-            The conversation is between '{self.known_side}' which we want to protect, and '{self.unknown_side}' which is the person that the user chat with.
-            Monitor the conversation closely and alert if any signs of inappropriate behavior are detected. 
-            Use the following guidelines to identify such behaviors:
-
-            Guidelines for Detecting Grooming Behavior:
-            Age Disparity: Look for signs where one participant is significantly older than the other.
-            Inappropriate Requests: Be alert for any requests for personal information, photos, or to meet in person.
-            Compliments and Flattery: Pay attention to excessive compliments or flattery, especially if they are out of context or seem manipulative.
-            Isolation Attempts: Note if one participant tries to isolate the other from friends or family.
-            Sexual Content: Detect any introduction of sexual topics or inappropriate language.
-            Testing Boundaries: Look for signs where one participant tests the boundaries of the other, such as pushing for more personal details or escalating topics.
-            Guidelines for Detecting Cyberbullying Behavior:
-            Insults and Name-calling: Identify any use of derogatory language, insults, or name-calling.
-            Threats and Intimidation: Look for threats of violence, intimidation, or any form of coercion.
-            Harassment: Note repeated unwanted contact or harassment.
-            Spreading Rumors: Be aware of any attempts to spread rumors or lies about someone.
-            Exclusion: Detect attempts to deliberately exclude someone from a group or activity.
-            Given the following conversation, determine if it shows signs of child grooming or cyberbullying.
-
-            Conversation:
-            \n\n{self.conversation_str}\n\n
-
-            Does the conversation indicate any signs of child grooming or cyberbullying? 
-            Answer 'Cyberbullying', 'Grooming', 'No', or 'Don't Know' only. 
-            {"Do not explain, act as a classifier" if not self.explain else "Please Explain your answer."}
+    def prompt(self) -> str:
+        prompt = """
+        {conversation_str}
+        Tag this conversation as safe, cyberbullying, or grooming.
+        Think through the interaction and provide an explanation.
+        Your answer format must include both Explanation and Tag.
         """
+        print(
+            prompt.format(
+                # known_side=self.known_side,
+                # unkown_side=self.unknown_side,
+                conversation_str=self.conversation_str,
+            )
+        )
+        return prompt.format(
+            # known_side=self.known_side,
+            # unkown_side=self.unknown_side,
+            conversation_str=self.conversation_str,
+        )
 
-    def classify(self):
+    def classify(self) -> str:
         """
         Classifies the conversation as 'Grooming' or 'Non-Grooming'.
         :return: The classification result.
         """
-        analysis_response = self.conversation.llm.generate([self.prompt])
-        result = analysis_response.generations[0][0].text.strip()
-        logging.info(f"model classification: {result}")
-        return result
+        analysis_response = self.llm.invoke(self.prompt).strip()
+        return analysis_response
+
+    def generate_system_prompt(
+        self,
+        system_message: str = few_shot_cot_system,
+    ) -> str:
+
+        if not self.examples:
+            return system_message
+
+        example_template = "Example {index}:\nConversation: {conversation}\nExplanation:{explanation}\nTag: {tag}\n\n"
+
+        formatted_examples = ""
+        for i, example in enumerate(self.examples):
+            conversation_text = "\n".join(
+                [
+                    f"{msg['sender']}: {msg['message']}"
+                    for msg in example["conversation"]
+                ]
+            )
+            formatted_examples += example_template.format(
+                index=i + 1,
+                conversation=conversation_text,
+                explanation=example["explanation"],
+                tag=example["tag"],
+            )
+
+        return (
+            system_message
+            + "\n"
+            + formatted_examples
+            + "\nNow classify the following conversation.\n"
+        )
