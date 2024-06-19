@@ -1,13 +1,19 @@
-import re
 import logging
 from typing import Dict, Optional
 
-from langchain.chains.conversation.base import ConversationChain
 from langchain.memory import ConversationBufferMemory
 from langchain_openai import OpenAI
 from langchain_core.messages.human import HumanMessage
 from langchain_core.messages.system import SystemMessage
 from langchain_core.language_models.llms import BaseLLM
+from langchain.chains import LLMChain
+from langchain.memory import ConversationBufferMemory
+from langchain_core.messages import SystemMessage
+from langchain_core.prompts.chat import (
+    ChatPromptTemplate,
+    HumanMessagePromptTemplate,
+    MessagesPlaceholder,
+)
 
 
 from prompts import few_shot_cot_system, guidlines_prompt as prompt
@@ -32,13 +38,20 @@ class GroomingDetector:
         :param known_side: The known side of the conversation (e.g., 'child').
         :param start_message: An optional starting message to initialize the conversation.
         """
-        self.known_side = known_side
-        self.unknown_side = unknown_side
-        self.explain = explain
-        self.llm = llm
-        self.conversation = ConversationChain(llm=llm, memory=memory)
         self.examples = examples
-        self.add_message(sender="system", content=self.generate_system_prompt())
+
+        template_messages = [
+            SystemMessage(content=self.generate_system_prompt()),
+            MessagesPlaceholder(variable_name="chat_history"),
+            HumanMessagePromptTemplate.from_template("{text}"),
+        ]
+        prompt_template = ChatPromptTemplate.from_messages(template_messages)
+
+        self.llm = llm
+        memory = ConversationBufferMemory(
+            memory_key="chat_history", return_messages=True
+        )
+        self.conversation = LLMChain(llm=llm, prompt=prompt_template, memory=memory)
         self.output_parser = ChatOutputParser()
 
     def add_message(self, sender: Sender, content: Content) -> None:
@@ -48,11 +61,8 @@ class GroomingDetector:
         :param message: The message to add.
         :param sender: The sender of the message ('known' or 'unknown').
         """
-        if sender == "system":
-            message = SystemMessage(id=sender, content=content)
-        else:
-            message = HumanMessage(content=content, id=sender)
 
+        message = HumanMessage(content=content, id=sender)
         self.conversation.memory.buffer.append(message)
         logging.info(f"message detected: {sender}: {content}")
 
@@ -77,26 +87,18 @@ class GroomingDetector:
         Think through the interaction and provide an explanation.
         Your answer format must include both Explanation and Tag.
         """
-        print(
-            prompt.format(
-                # known_side=self.known_side,
-                # unkown_side=self.unknown_side,
-                conversation_str=self.conversation_str,
-            )
-        )
         return prompt.format(
-            # known_side=self.known_side,
-            # unkown_side=self.unknown_side,
             conversation_str=self.conversation_str,
         )
 
     def classify(self) -> str:
         """
-        Classifies the conversation as 'Grooming' or 'Non-Grooming'.
+        Classifies the conversation as 'grooming' or 'safe' or 'cyberbullying'.
         :return: The classification result.
         """
         analysis_response = self.llm.invoke(self.prompt).strip()
-        return analysis_response
+        parsed_output = self.output_parser.parse(analysis_response)
+        return parsed_output
 
     def generate_system_prompt(
         self,

@@ -21,7 +21,7 @@ def setup_logging(enable_logging):
     else:
         logging.basicConfig(level=logging.CRITICAL)  # Suppress logging
 
-
+import re
 def main():
     parser = argparse.ArgumentParser(
         description="Run the grooming detector with optional logging."
@@ -39,6 +39,8 @@ def main():
     print(len(test_examples))
 
     llm = OpenAI()  # Make sure you have OPENAI_API_KEY env var
+    
+    tp = 0
 
     for example in test_examples:
         print("**********\n\nPredicting new conversation...")
@@ -51,6 +53,11 @@ def main():
             print(f"Sender: {message['sender']} \nMessage: {message["message"]}")
             if message['sender'] != 'user':
                 classification_result = detector.classify()
-                print(f"y_pred: {classification_result}, \ny_true: {example['tag']} \n******")
+                print(f"y_pred: {classification_result['tag'].lower()} \ny_true: {example['tag']} \n******")
+                x = int(classification_result['tag'].lower() == example['tag'].lower())
+                tp+=x
+                print(x, tp/len(train_examples))
+
+        print(f"%%%%%%%%%%%%\n\n{tp, tp/len(test_examples)}")
 if __name__ == "__main__":
     main()
