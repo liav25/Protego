@@ -1,8 +1,8 @@
+import argparse
 import json
+import logging
 import os
 import sys
-import logging
-import argparse
 
 from langchain.memory import ConversationBufferMemory
 from langchain_openai import OpenAI
@@ -15,17 +15,16 @@ TRAIN_SIZE = 3
 
 def setup_logging(enable_logging):
     if enable_logging:
-        logging.basicConfig(
-            level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-        )
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     else:
         logging.basicConfig(level=logging.CRITICAL)  # Suppress logging
 
+
 import re
+
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Run the grooming detector with optional logging."
-    )
+    parser = argparse.ArgumentParser(description="Run the grooming detector with optional logging.")
     parser.add_argument("--logs", action="store_true", help="Enable logging")
     args = parser.parse_args()
 
@@ -36,28 +35,30 @@ def main():
 
     train_examples = examples[:TRAIN_SIZE]
     test_examples = examples[TRAIN_SIZE:]
-    print(len(test_examples))
+    logging.info(f"N Shots: {len(train_examples)}, Validation size: {len(test_examples)} ")
 
     llm = OpenAI()  # Make sure you have OPENAI_API_KEY env var
-    
+
     tp = 0
 
     for example in test_examples:
-        print("**********\n\nPredicting new conversation...")
+        logging.info("**********\n\nPredicting a new conversation...")
         memory = ConversationBufferMemory(return_messages=True)
 
         detector = GroomingDetector(llm, memory, examples=train_examples)
 
-        for message in example["conversation"]:
+        for i, message in enumerate(example["conversation"]):
             detector.add_message(sender=message["sender"], content=message["message"])
-            print(f"Sender: {message['sender']} \nMessage: {message["message"]}")
-            if message['sender'] != 'user':
+            logging.info(f"Sender: {message['sender']} \nMessage: {message["message"]}")
+            if message["sender"] != "user":
                 classification_result = detector.classify()
-                print(f"y_pred: {classification_result['tag'].lower()} \ny_true: {example['tag']} \n******")
-                x = int(classification_result['tag'].lower() == example['tag'].lower())
-                tp+=x
-                print(x, tp/len(train_examples))
+                logging.info(
+                    f"Pred Class: {classification_result['tag'].lower()} \True Class: {example['tag']} \n******"
+                )
+                is_accurate = int(classification_result["tag"].lower() == example["tag"].lower())
+                tp += is_accurate
+            logging.info(f"Acuracy score for scenario {i}: {tp/len(train_examples)}")
 
-        print(f"%%%%%%%%%%%%\n\n{tp, tp/len(test_examples)}")
+
 if __name__ == "__main__":
     main()

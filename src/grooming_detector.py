@@ -1,23 +1,18 @@
 import logging
 from typing import Dict, Optional
 
-from langchain.memory import ConversationBufferMemory
-from langchain_openai import OpenAI
-from langchain_core.messages.human import HumanMessage
-from langchain_core.messages.system import SystemMessage
-from langchain_core.language_models.llms import BaseLLM
 from langchain.chains import LLMChain
 from langchain.memory import ConversationBufferMemory
+from langchain_core.language_models.llms import BaseLLM
 from langchain_core.messages import SystemMessage
-from langchain_core.prompts.chat import (
-    ChatPromptTemplate,
-    HumanMessagePromptTemplate,
-    MessagesPlaceholder,
-)
+from langchain_core.messages.human import HumanMessage
+from langchain_core.messages.system import SystemMessage
+from langchain_core.prompts.chat import ChatPromptTemplate, HumanMessagePromptTemplate, MessagesPlaceholder
+from langchain_openai import OpenAI
 
-
-from prompts import few_shot_cot_system, guidlines_prompt as prompt
 from output_parser import ChatOutputParser
+from prompts import few_shot_cot_system
+from prompts import guidlines_prompt as prompt
 
 Content = Sender = str
 
@@ -48,9 +43,7 @@ class GroomingDetector:
         prompt_template = ChatPromptTemplate.from_messages(template_messages)
 
         self.llm = llm
-        memory = ConversationBufferMemory(
-            memory_key="chat_history", return_messages=True
-        )
+        memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
         self.conversation = LLMChain(llm=llm, prompt=prompt_template, memory=memory)
         self.output_parser = ChatOutputParser()
 
@@ -72,12 +65,7 @@ class GroomingDetector:
 
     @property
     def conversation_str(self):
-        return "\n".join(
-            [
-                f"{message.id}: {message.content}"
-                for message in self.conversation.memory.buffer
-            ]
-        )
+        return "\n".join([f"{message.id}: {message.content}" for message in self.conversation.memory.buffer])
 
     @property
     def prompt(self) -> str:
@@ -112,12 +100,7 @@ class GroomingDetector:
 
         formatted_examples = ""
         for i, example in enumerate(self.examples):
-            conversation_text = "\n".join(
-                [
-                    f"{msg['sender']}: {msg['message']}"
-                    for msg in example["conversation"]
-                ]
-            )
+            conversation_text = "\n".join([f"{msg['sender']}: {msg['message']}" for msg in example["conversation"]])
             formatted_examples += example_template.format(
                 index=i + 1,
                 conversation=conversation_text,
@@ -125,9 +108,4 @@ class GroomingDetector:
                 tag=example["tag"],
             )
 
-        return (
-            system_message
-            + "\n"
-            + formatted_examples
-            + "\nNow classify the following conversation.\n"
-        )
+        return system_message + "\n" + formatted_examples + "\nNow classify the following conversation.\n"
