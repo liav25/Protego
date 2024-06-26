@@ -1,12 +1,22 @@
 import logging
+from typing import Optional
 
-from langchain.chains.conversation.base import ConversationChain
+from langchain.chains import LLMChain
 from langchain.memory import ConversationBufferMemory
-from langchain_openai import OpenAI
-from langchain_core.messages.human import HumanMessage
 from langchain_core.language_models.llms import BaseLLM
+from langchain_core.messages import SystemMessage
+from langchain_core.messages.human import HumanMessage
+from langchain_core.messages.system import SystemMessage
+from langchain_core.prompts.chat import (
+    ChatPromptTemplate,
+    HumanMessagePromptTemplate,
+    MessagesPlaceholder,
+)
+from langchain_openai import OpenAI
 
-from typing import Dict
+from output_parser import ChatOutputParser
+from prompts import few_shot_cot_system
+from prompts import guidlines_prompt as prompt
 
 Content = Sender = str
 
@@ -19,6 +29,7 @@ class GroomingDetector:
         known_side: str = "user",
         unknown_side: str = "unknown",
         explain: bool = False,
+        examples: Optional[list[dict[str, str]]] = None,
     ):
         """
         Initializes the GroomingDetector with the known side and optionally a starting message.
@@ -26,71 +37,73 @@ class GroomingDetector:
         :param known_side: The known side of the conversation (e.g., 'child').
         :param start_message: An optional starting message to initialize the conversation.
         """
-        self.known_side = known_side
-        self.unknown_side = unknown_side
-        self.explain = explain
+        self.examples = examples
 
-        self.conversation = ConversationChain(llm=llm, memory=memory)
+        template_messages = [
+            SystemMessage(content=self.generate_system_prompt()),
+            MessagesPlaceholder(variable_name="chat_history"),
+            HumanMessagePromptTemplate.from_template("{text}"),
+        ]
+        prompt_template = ChatPromptTemplate.from_messages(template_messages)
 
-    def add_message(self, sender: Sender, content: Content):
-        """
-        Adds a message to the conversation.
+        self.llm = llm
+        self.conversation = LLMChain(llm=llm, prompt=prompt_template)
+        self.output_parser = ChatOutputParser()
 
-        :param message: The message to add.
-        :param sender: The sender of the message ('known' or 'unknown').
-        """
-        self.conversation.memory.buffer.append(HumanMessage(content=content, id=sender))
-        logging.info(f"message detected: {sender}: {content}")
-
-    def add_bulk_messages(self, messages: Dict[Sender, Content]):
-        for sender, content in messages.items():
-            self.add_message(sender, content)
-
-    @property
-    def conversation_str(self):
+    def conversation_str(self, conversation):
         return "\n".join(
-            [
-                f"{message.id}: {message.content}"
-                for message in self.conversation.memory.buffer
-            ]
+            [f"{message['sender']}: {message['content']}" for message in conversation]
         )
 
-    @property
-    def prompt(self):
-        return f""""You are an AI language model designed to detect signs of cyberbullying and online grooming in conversations. 
-            The conversation is between '{self.known_side}' which we want to protect, and '{self.unknown_side}' which is the person that the user chat with.
-            Monitor the conversation closely and alert if any signs of inappropriate behavior are detected. 
-            Use the following guidelines to identify such behaviors:
-
-            Guidelines for Detecting Grooming Behavior:
-            Age Disparity: Look for signs where one participant is significantly older than the other.
-            Inappropriate Requests: Be alert for any requests for personal information, photos, or to meet in person.
-            Compliments and Flattery: Pay attention to excessive compliments or flattery, especially if they are out of context or seem manipulative.
-            Isolation Attempts: Note if one participant tries to isolate the other from friends or family.
-            Sexual Content: Detect any introduction of sexual topics or inappropriate language.
-            Testing Boundaries: Look for signs where one participant tests the boundaries of the other, such as pushing for more personal details or escalating topics.
-            Guidelines for Detecting Cyberbullying Behavior:
-            Insults and Name-calling: Identify any use of derogatory language, insults, or name-calling.
-            Threats and Intimidation: Look for threats of violence, intimidation, or any form of coercion.
-            Harassment: Note repeated unwanted contact or harassment.
-            Spreading Rumors: Be aware of any attempts to spread rumors or lies about someone.
-            Exclusion: Detect attempts to deliberately exclude someone from a group or activity.
-            Given the following conversation, determine if it shows signs of child grooming or cyberbullying.
-
-            Conversation:
-            \n\n{self.conversation_str}\n\n
-
-            Does the conversation indicate any signs of child grooming or cyberbullying? 
-            Answer 'Cyberbullying', 'Grooming', 'No', or 'Don't Know' only. 
-            {"Do not explain, act as a classifier" if not self.explain else "Please Explain your answer."}
+    def prompt(self, conversation_str) -> str:
+        prompt = """
+        {conversation_str}
+        Tag this conversation as safe, cyberbullying, or grooming.
+        Think through the interaction and provide an explanation.
+        Your answer format must include both Explanation and Tag.
         """
+        return prompt.format(
+            conversation_str=conversation_str,
+        )
 
-    def classify(self):
+    def classify(self, conversation) -> str:
         """
-        Classifies the conversation as 'Grooming' or 'Non-Grooming'.
+        Classifies the conversation as 'grooming' or 'safe' or 'cyberbullying'.
         :return: The classification result.
         """
-        analysis_response = self.conversation.llm.generate([self.prompt])
-        result = analysis_response.generations[0][0].text.strip()
-        logging.info(f"model classification: {result}")
-        return result
+        prompt = self.prompt(self.conversation_str(conversation))
+        analysis_response = self.llm.invoke(prompt).strip()
+        parsed_output = self.output_parser.parse(analysis_response)
+        return parsed_output
+
+    def generate_system_prompt(
+        self,
+        system_message: str = few_shot_cot_system,
+    ) -> str:
+
+        if not self.examples:
+            return system_message
+
+        example_template = "Example {index}:\nConversation: {conversation}\nExplanation:{explanation}\nTag: {tag}\n\n"
+
+        formatted_examples = ""
+        for i, example in enumerate(self.examples):
+            conversation_text = "\n".join(
+                [
+                    f"{msg['sender']}: {msg['message']}"
+                    for msg in example["conversation"]
+                ]
+            )
+            formatted_examples += example_template.format(
+                index=i + 1,
+                conversation=conversation_text,
+                explanation=example["explanation"],
+                tag=example["tag"],
+            )
+
+        return (
+            system_message
+            + "\n"
+            + formatted_examples
+            + "\nNow classify the following conversation.\n"
+        )
