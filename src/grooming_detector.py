@@ -72,6 +72,7 @@ class GroomingDetector:
         :return: The classification result.
         """
         prompt = self.prompt(self.conversation_str(conversation))
+
         analysis_response = self.llm.invoke(prompt).strip()
         parsed_output = self.output_parser.parse(analysis_response)
         return parsed_output
